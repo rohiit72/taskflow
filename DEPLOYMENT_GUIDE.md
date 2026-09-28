@@ -111,6 +111,7 @@ Vercel is primarily a serverless platform designed for frontend frameworks, but 
 - **Read-Only Root Filesystem**: In Vercel's serverless runtime (`/var/task`), the code directory is strictly read-only. SQLite cannot create or write to a database file in the project root.
 - **The `/tmp` Solution**: The `/tmp` scratch directory is the only writable directory on Vercel. Our `config.py` detects `VERCEL=1` and routes SQLite to `/tmp/tasks.db`, while `database.py` auto-initializes the schema on first connection.
 - **Important Limitation (Module 26)**: Files in `/tmp` are **ephemeral** and reset on container cold restarts. For permanent production persistence on serverless platforms, connect to a cloud database (like PostgreSQL on Neon or Supabase). For SQLite persistence, use **Render** (Part 2).
+- **Required deployment check**: If the app is deployed on Vercel, make sure the runtime is configured to use the Vercel environment (the app checks `os.environ.get("VERCEL")` before choosing the database path).
 
 ### Configuration in `vercel.json`
 We have included `vercel.json`:
@@ -136,8 +137,10 @@ We have included `vercel.json`:
 2. Click **Add New...** &rarr; **Project**.
 3. Import your `taskflow-backend` repository.
 4. Set **Environment Variables**:
+   - `VERCEL`: `1` (this tells Flask to write SQLite to `/tmp` instead of the read-only repo root)
    - `SECRET_KEY`: your random production key
    - `FLASK_DEBUG`: `False`
+   - `DATABASE`: optional override, usually left blank so the app defaults to `/tmp/tasks.db`
 5. Click **Deploy**.
 6. Vercel will build and provide a live URL: `https://your-project.vercel.app`.
 
@@ -245,14 +248,15 @@ HTTP Status: `400 Bad Request`.
 
 ### 1. 500 Internal Server Error on Vercel
 - **Symptom**: Navigating to `/` displays the custom 500 Internal Server Error page, but `/about` loads fine (200 OK).
-- **Cause**: Vercel executes serverless functions in a read-only environment (`/var/task`). If `tasks.db` is targeted in the root project folder, SQLite throws `sqlite3.OperationalError: attempt to write a readonly database` when creating or modifying tables.
+- **Cause**: Vercel executes serverless functions in a read-only environment (`/var/task`). If the app still tries to open `tasks.db` in the project root, SQLite throws `sqlite3.OperationalError: attempt to write a readonly database` while creating tables or seeding data.
 - **Solution**:
   1. In `config.py`, verify `DATABASE` points to `/tmp/tasks.db` when `VERCEL` is set:
      ```python
      if os.environ.get("VERCEL"):
          DATABASE = os.environ.get("DATABASE", os.path.join(tempfile.gettempdir(), "tasks.db"))
      ```
-  2. In `database.py`, ensure `get_db()` automatically calls `_init_schema(conn)` if the database file does not exist yet.
+  2. In `database.py`, ensure `get_db()` automatically creates the parent directory and calls `_init_schema(conn)` when the DB file is missing.
+  3. Check the Vercel project settings and verify `VERCEL=1` is present; do not keep a writable SQLite file in the repo root.
 
 ### 2. Seeing Blank Tasks After Cold Starts on Vercel
 - **Symptom**: Tasks created previously disappear after 15–30 minutes of inactivity.
